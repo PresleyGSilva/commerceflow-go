@@ -1,0 +1,10 @@
+.env
+node_modules/
+web/node_modules/
+web/.next/
+web/out/
+tests/node_modules/
+bin/
+*.exe
+*.test
+coverage.out

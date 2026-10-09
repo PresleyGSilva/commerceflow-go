@@ -1,0 +1,9 @@
+.git
+.env
+node_modules
+web/node_modules
+web/.next
+bin/
+*.exe
+*.test
+coverage.out

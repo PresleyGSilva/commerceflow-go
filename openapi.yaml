@@ -1,0 +1,706 @@
+openapi: 3.0.3
+info:
+  title: CommerceFlow API
+  version: 1.0.0
+  description: |
+    CommerceFlow storefront API. Money is always integer cents, never float.
+    Authenticated routes use Bearer access tokens; tenant scope via X-Org-ID.
+    NOTE: catalog and checkout/orders slices extend this file with their paths.
+servers:
+  - url: http://localhost:8082
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+    Org:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        role: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string }
+        name: { type: string }
+        role: { type: string, enum: [admin, customer] }
+    LowStockProduct:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        stock_qty: { type: integer }
+        price_cents: { type: integer }
+    TopProduct:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        qty: { type: integer }
+        revenue_cents: { type: integer }
+    Dashboard:
+      type: object
+      properties:
+        revenue_cents: { type: integer }
+        orders_count: { type: integer }
+        paid_count: { type: integer }
+        low_stock:
+          type: array
+          items: { $ref: '#/components/schemas/LowStockProduct' }
+        top_products:
+          type: array
+          items: { $ref: '#/components/schemas/TopProduct' }
+    SalesPoint:
+      type: object
+      properties:
+        date: { type: string, format: date }
+        orders_count: { type: integer }
+        revenue_cents: { type: integer }
+    StockItem:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        slug: { type: string }
+        stock_qty: { type: integer }
+        price_cents: { type: integer }
+        stock_value_cents: { type: integer }
+        low_stock: { type: boolean }
+    OrderItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        order_id: { type: string, format: uuid }
+        product_id: { type: string, format: uuid }
+        product_name: { type: string }
+        qty: { type: integer }
+        unit_price_cents: { type: integer }
+    Order:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        org_id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, paid, failed, cancelled, shipped] }
+        subtotal_cents: { type: integer }
+        discount_cents: { type: integer }
+        total_cents: { type: integer }
+        coupon_code: { type: string }
+        payment_mode: { type: string, enum: [approve, decline, fail] }
+        payment_auth_code: { type: string }
+        stock_reserved: { type: boolean }
+        address_id: { type: string, format: uuid, nullable: true }
+        created_at: { type: string, format: date-time }
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OrderItem' }
+    Totals:
+      type: object
+      properties:
+        subtotal_cents: { type: integer }
+        discount_cents: { type: integer }
+        total_cents: { type: integer }
+    PageMeta:
+      type: object
+      properties:
+        page: { type: integer }
+        per_page: { type: integer }
+        total: { type: integer }
+paths:
+  /healthz:
+    get:
+      security: []
+      summary: Liveness probe
+      responses:
+        '200':
+          description: OK
+  /readyz:
+    get:
+      security: []
+      summary: Readiness probe (pings DB)
+      responses:
+        '200':
+          description: Ready
+        '503':
+          description: Not ready
+  /api/v1/auth/register:
+    post:
+      security: []
+      summary: Register a new customer account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, name]
+              properties:
+                email: { type: string }
+                password: { type: string }
+                name: { type: string }
+      responses:
+        '201':
+          description: Created
+        '400':
+          description: Invalid body
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/auth/login:
+    post:
+      security: []
+      summary: Login, returns access token, user and orgs[]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string }
+                password: { type: string }
+      responses:
+        '200':
+          description: Authenticated
+        '401':
+          description: Bad credentials
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/auth/refresh:
+    post:
+      security: []
+      summary: Rotate access token via httpOnly refresh cookie
+      responses:
+        '200':
+          description: Refreshed
+        '401':
+          description: Missing/invalid refresh token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/auth/logout:
+    post:
+      summary: Clear refresh cookie
+      responses:
+        '200':
+          description: Logged out
+  /api/v1/auth/me:
+    get:
+      summary: Current user profile
+      responses:
+        '200':
+          description: Profile
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/admin/dashboard:
+    get:
+      summary: Admin dashboard aggregates (admin only)
+      parameters:
+        - in: header
+          name: X-Org-ID
+          schema: { type: string }
+      responses:
+        '200':
+          description: Aggregates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Dashboard' }
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Forbidden (non-admin)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/admin/reports/sales:
+    get:
+      summary: Paid revenue summed per day (admin only)
+      parameters:
+        - in: query
+          name: from
+          schema: { type: string, format: date }
+        - in: query
+          name: to
+          schema: { type: string, format: date }
+        - in: query
+          name: group_by
+          schema: { type: string, enum: [day], default: day }
+        - in: header
+          name: X-Org-ID
+          schema: { type: string }
+      responses:
+        '200':
+          description: Daily points
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      from: { type: string }
+                      to: { type: string }
+                      group_by: { type: string }
+                      points:
+                        type: array
+                        items: { $ref: '#/components/schemas/SalesPoint' }
+        '400':
+          description: Invalid params
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Forbidden (non-admin)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/admin/reports/stock:
+    get:
+      summary: Products with on-hand quantity and cents value (admin only)
+      parameters:
+        - in: header
+          name: X-Org-ID
+          schema: { type: string }
+      responses:
+        '200':
+          description: Stock report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/StockItem' }
+                      total_value_cents: { type: integer }
+                      low_stock_count: { type: integer }
+        '401':
+          description: Unauthorized
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Forbidden (non-admin)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/products:
+    get:
+      tags: [catalog]
+      summary: List products (q, category, min_price/max_price in cents, sort, page, per_page)
+      parameters:
+        - { name: q, in: query, schema: { type: string } }
+        - { name: category, in: query, schema: { type: string }, description: category slug or id }
+        - { name: min_price, in: query, schema: { type: integer } }
+        - { name: max_price, in: query, schema: { type: integer } }
+        - { name: sort, in: query, schema: { type: string, enum: [price_asc, price_desc, newest, name_asc] } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200': { description: '{data:[], meta:{page,per_page,total}}' }
+  /api/v1/products/{slug}:
+    get:
+      tags: [catalog]
+      summary: Product detail by slug
+      parameters:
+        - { name: slug, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '404': { description: Not found }
+  /api/v1/categories:
+    get:
+      tags: [catalog]
+      summary: List categories
+      responses:
+        '200': { description: OK }
+  /api/v1/coupons/validate:
+    get:
+      tags: [catalog]
+      summary: Simulate coupon discount for a subtotal in cents
+      parameters:
+        - { name: code, in: query, required: true, schema: { type: string } }
+        - { name: subtotal, in: query, schema: { type: integer } }
+      responses:
+        '200': { description: '{data:{code,type,value,discount_cents,valid}}' }
+        '404': { description: Coupon not found }
+  /api/v1/addresses:
+    get:
+      tags: [catalog]
+      summary: List my addresses
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: OK }
+        '401': { description: Unauthorized }
+    post:
+      tags: [catalog]
+      summary: Create address (street, city required)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Created }
+        '401': { description: Unauthorized }
+  /api/v1/addresses/{id}:
+    put:
+      tags: [catalog]
+      summary: Update my address
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+        '404': { description: Not found }
+    delete:
+      tags: [catalog]
+      summary: Delete my address
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Deleted }
+        '404': { description: Not found }
+  /api/v1/admin/categories:
+    post:
+      tags: [catalog]
+      summary: Admin create category
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Created }
+        '403': { description: Admin only }
+  /api/v1/admin/categories/{id}:
+    put:
+      tags: [catalog]
+      summary: Admin update category
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+    delete:
+      tags: [catalog]
+      summary: Admin delete category
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Deleted }
+  /api/v1/admin/products/{id}/stock:
+    patch:
+      tags: [catalog]
+      summary: Adjust stock (transactional, never negative, writes stock_movements)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [delta]
+              properties:
+                delta: { type: integer }
+                reason: { type: string }
+      responses:
+        '200': { description: OK }
+        '422': { description: Insufficient stock }
+  /api/v1/admin/stock/movements:
+    get:
+      tags: [catalog]
+      summary: List stock movements
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: OK }
+  /api/v1/admin/coupons:
+    get:
+      tags: [catalog]
+      summary: Admin list coupons
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: OK }
+    post:
+      tags: [catalog]
+      summary: Admin create coupon (percent 1-90, fixed in cents)
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Created }
+  /api/v1/admin/coupons/{id}:
+    put:
+      tags: [catalog]
+      summary: Admin update coupon
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+    delete:
+      tags: [catalog]
+      summary: Admin delete coupon
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Deleted }
+  /api/v1/checkout:
+    post:
+      tags: [orders]
+      summary: Checkout with Idempotency-Key (stock locked, cents totals, simulated payment)
+      description: |
+        Idempotency-Key header is REQUIRED; repeating a key returns the original
+        order (200) without touching stock. payment approve persists paid,
+        decline/fail persist failed AND restore stock in the same transaction.
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+        - { name: X-Org-ID, in: header, required: true, schema: { type: string, format: uuid } }
+        - { name: X-User, in: header, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [product_id, qty]
+                    properties:
+                      product_id: { type: string, format: uuid }
+                      qty: { type: integer, minimum: 1 }
+                address_id: { type: string, format: uuid }
+                coupon_code: { type: string }
+                payment_mode: { type: string, enum: [approve, decline, fail], default: approve }
+      responses:
+        '200':
+          description: Order paid/failed, or idempotent replay of the original order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Order' }
+        '400':
+          description: missing key/org, validation, invalid coupon, insufficient stock
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { description: Missing/invalid bearer token }
+        '404':
+          description: Product or address not found
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+  /api/v1/checkout/preview:
+    post:
+      tags: [orders]
+      summary: Cart totals preview (read-only, persists nothing)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: X-Org-ID, in: header, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [product_id, qty]
+                    properties:
+                      product_id: { type: string, format: uuid }
+                      qty: { type: integer, minimum: 1 }
+                coupon_code: { type: string }
+      responses:
+        '200':
+          description: Totals in integer cents
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Totals' }
+        '400':
+          description: Validation or invalid coupon
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '401': { description: Missing/invalid bearer token }
+        '404': { description: Product not found }
+  /api/v1/orders:
+    get:
+      tags: [orders]
+      summary: List my orders (newest first, items embedded)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: X-Org-ID, in: header, required: true, schema: { type: string, format: uuid } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: Own orders plus pagination meta
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Order' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { description: Missing/invalid bearer token }
+  /api/v1/orders/{id}:
+    get:
+      tags: [orders]
+      summary: Order detail (owner or admin)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: X-Org-ID, in: header, required: true, schema: { type: string, format: uuid } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Order with items
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Order' }
+        '401': { description: Missing/invalid bearer token }
+        '404': { description: Not found (includes foreign orders) }
+  /api/v1/orders/{id}/cancel:
+    post:
+      tags: [orders]
+      summary: Cancel order (owner while pending/paid restores stock; admin any non-terminal)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: X-Org-ID, in: header, required: true, schema: { type: string, format: uuid } }
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200':
+          description: Cancelled order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Order' }
+        '401': { description: Missing/invalid bearer token }
+        '404': { description: Not found }
+        '409': { description: Already cancelled / cannot cancel in this state }
+  /api/v1/admin/products:
+    get:
+      tags: [admin]
+      summary: Admin product list
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { description: OK }
+    post:
+      tags: [admin]
+      summary: Admin create product
+      security: [{ bearerAuth: [] }]
+      responses:
+        '201': { description: Created }
+  /api/v1/admin/products/{id}:
+    put:
+      tags: [admin]
+      summary: Admin update product
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '200': { description: OK }
+  /api/v1/admin/orders:
+    get:
+      tags: [admin]
+      summary: Admin order list (data is a bare array plus meta)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, paid, failed, cancelled, shipped] } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: per_page, in: query, schema: { type: integer, default: 20 } }
+      responses:
+        '200':
+          description: Orders array plus pagination meta
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Order' }
+                  meta: { $ref: '#/components/schemas/PageMeta' }
+        '401': { description: Missing/invalid bearer token }
+        '403': { description: Admin role required }
+  /api/v1/admin/orders/{id}/status:
+    patch:
+      tags: [admin]
+      summary: Admin update order status (transition rules enforced, stock restored on cancel/fail from held states)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [pending, paid, failed, cancelled, shipped] }
+      responses:
+        '200':
+          description: Updated order
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Order' }
+        '400': { description: Unknown status }
+        '401': { description: Missing/invalid bearer token }
+        '403': { description: Admin role required }
+        '404': { description: Order not found }
+        '409': { description: Illegal transition or terminal state }

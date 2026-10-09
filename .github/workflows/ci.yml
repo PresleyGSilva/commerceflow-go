@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - run: go vet ./...
+      - run: go test ./... 2>&1 | head -n 100
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check web exists
+        id: web
+        run: |
+          if [ -f web/package.json ]; then echo "exists=true" >> "$GITHUB_OUTPUT"; else echo "exists=false" >> "$GITHUB_OUTPUT"; fi
+      - uses: actions/setup-node@v4
+        if: steps.web.outputs.exists == 'true'
+        with:
+          node-version: "20"
+      - run: npm ci
+        if: steps.web.outputs.exists == 'true'
+        working-directory: web
+      - run: npx tsc --noEmit
+        if: steps.web.outputs.exists == 'true'
+        working-directory: web
+      - run: npm run build
+        if: steps.web.outputs.exists == 'true'
+        working-directory: web
